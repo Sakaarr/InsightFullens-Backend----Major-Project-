@@ -1,5 +1,6 @@
 import os,time
 import csv
+from collections import defaultdict
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -11,25 +12,49 @@ from selenium.webdriver.edge.service import Service as EdgeService
 from .models import Product, ProductReview
 from .serializers import ProductSerializer , ProductSearchInputSerializer
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from transformers import T5ForConditionalGeneration, T5Tokenizer,BartTokenizer, BartForConditionalGeneration
 import torch
 
 
-model_path = "C:/Users/DELL/Desktop/InsightFullens/insightfullens/product/fine_tuned"
+model_path = "C:/Users/DELL/Desktop/InsightFullens/insightfullens/product/t5base"
 model = T5ForConditionalGeneration.from_pretrained(model_path)
 tokenizer = T5Tokenizer.from_pretrained(model_path)
+model.eval()
 def extract_aspect_sentiment(reviews):
-    outputs = set()  # Store unique extracted aspects and sentiments
-    for r in reviews:
-        test_input = f"aspect sentiment extraction: {r}"
-        input_ids = tokenizer(test_input, return_tensors="pt").input_ids
+    # outputs = set()  # Store unique extracted aspects and sentiments
+    # for r in reviews:
+    #     test_input = f"aspect sentiment extraction: {r}"
+    #     input_ids = tokenizer(test_input, return_tensors="pt").input_ids
 
-        # Generate output from the model
-        output_ids = model.generate(input_ids, max_length=128)
-        output = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-        outputs.add(output)
+    #     # Generate output from the model
+    #     output_ids = model.generate(input_ids, max_length=128)
+    #     output = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    #     outputs.add(output)
 
-    return list(outputs)
+    # return list(outputs)
+   
+    """Generate predictions for a list of input review texts."""
+    predictions = []
+    for review in reviews:
+        input_text = f"aspect-sentiment analysis: {review}"
+        input_encoding = tokenizer(input_text, return_tensors="pt", padding=True, truncation=True, max_length=128)
+        input_ids = input_encoding["input_ids"]
+        attention_mask = input_encoding["attention_mask"]
+
+        with torch.no_grad():
+            output_ids = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_length=50,  # Increase length to capture details
+                num_beams=5,  # Beam search to improve quality
+                temperature=0.7,  # Lower temp to keep responses focused
+                top_k=50  # Limit randomness in word choices
+            )
+
+        prediction = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+        predictions.append(prediction)
+    
+    return predictions
 def init_driver():
     edge_options = Options()
     edge_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -78,9 +103,43 @@ class ProductSearchOrScrapeView(APIView):
                 if product_name:
                     product, _ = Product.objects.get_or_create(name=product_name)
                     extracted_aspects = extract_aspect_sentiment(reviews)
+                    extracted_aspects_text = " ".join(extracted_aspects)
+                    aspect_sentiment_count = defaultdict(lambda: {"positive": 0, "negative": 0, "neutral": 0})
+
+                    # Process each extracted aspect sentiment
+                    for aspect_string in extracted_aspects:
+                        parts = aspect_string.split(", ")
+                        for part in parts:
+                            if ":" in part:
+                                aspect, sentiment = part.rsplit(": ", 1)
+                                aspect = aspect.strip().upper()  # Capitalizing aspect
+                                aspect_sentiment_count[aspect][sentiment.strip()] += 1
+
+                    # Group aspects based on sentiment
+                    positive_aspects = [f"**{aspect}**" for aspect, counts in aspect_sentiment_count.items() if counts["positive"] > 0 and counts["negative"] == 0]
+                    negative_aspects = [f"**{aspect}**" for aspect, counts in aspect_sentiment_count.items() if counts["negative"] > 0 and counts["positive"] == 0]
+                    mixed_aspects = [f"**{aspect}**" for aspect, counts in aspect_sentiment_count.items() if counts["positive"] > 0 and counts["negative"] > 0]
+
+                    # Constructing the final summary
+                    summary_parts = []
+
+                    if positive_aspects:
+                        summary_parts.append(f"Many users found the {', '.join(positive_aspects)} of the product to be good.")
+
+                    if mixed_aspects:
+                        summary_parts.append(f"Opinions on the {', '.join(mixed_aspects)} are mixed; some users liked them, while others found them lacking.")
+
+                    if negative_aspects:
+                        summary_parts.append(f"Users reported issues with the {', '.join(negative_aspects)}.")
+
+                    # Generate final summary
+                    summary_text = " ".join(summary_parts)
+                    print(summary_text)
+
+                        
                     for review_text in reviews:
                         ProductReview.objects.create(product=product, review_text=review_text)
-                    return Response({"product_name": product_name, "reviews": reviews,"extracted_aspects": extracted_aspects}, status=status.HTTP_200_OK)
+                    return Response({"product_name": product_name, "reviews": reviews,"extracted_aspects": extracted_aspects,"summary_text":summary_text}, status=status.HTTP_200_OK)
                 else:
                     return Response({"message": "Failed to scrape product details."}, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
