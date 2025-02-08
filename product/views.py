@@ -302,7 +302,10 @@ from .serializers import ProductSerializer, ProductSearchInputSerializer
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, OpenApiExample
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 import torch
-
+from rest_framework.decorators import api_view
+from django.core.files.storage import FileSystemStorage
+from django.contrib import messages
+from .tasks import extract_aspect_sentiment_task
 # Load pre-trained model
 model_path = "C:/Users/DELL/Desktop/InsightFullens/insightfullens/product/t5base"
 model = T5ForConditionalGeneration.from_pretrained(model_path)
@@ -382,7 +385,7 @@ class ProductSearchOrScrapeView(APIView):
                 product_name, reviews = scrape_product_reviews(user_input)
                 if product_name:
                     product, _ = Product.objects.get_or_create(name=product_name)
-                    extracted_aspects = extract_aspect_sentiment(reviews)
+                    extracted_aspects = extract_aspect_sentiment_tasks.delay(reviews)
 
                     aspect_sentiment_count = defaultdict(lambda: {"positive": 0, "negative": 0, "neutral": 0})
                     for aspect_string in extracted_aspects:
@@ -429,7 +432,7 @@ class ProductSearchOrScrapeView(APIView):
                 for product in products:
                     reviews_qs = ProductReview.objects.filter(product=product)
                     reviews = list(reviews_qs.values_list("review_text", flat=True))
-                    extracted_aspects = extract_aspect_sentiment(reviews) if reviews else []
+                    extracted_aspects =extract_aspect_sentiment_tasks.delay(reviews) if reviews else []
                     summary_text = "No reviews available for sentiment analysis." if not reviews else " ".join(extracted_aspects)
 
                     serializer = ProductSerializer(product)
