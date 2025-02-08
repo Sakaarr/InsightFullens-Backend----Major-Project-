@@ -385,7 +385,7 @@ class ProductSearchOrScrapeView(APIView):
                 product_name, reviews = scrape_product_reviews(user_input)
                 if product_name:
                     product, _ = Product.objects.get_or_create(name=product_name)
-                    extracted_aspects = extract_aspect_sentiment_tasks.delay(reviews)
+                    extracted_aspects = extract_aspect_sentiment(reviews)
 
                     aspect_sentiment_count = defaultdict(lambda: {"positive": 0, "negative": 0, "neutral": 0})
                     for aspect_string in extracted_aspects:
@@ -432,7 +432,7 @@ class ProductSearchOrScrapeView(APIView):
                 for product in products:
                     reviews_qs = ProductReview.objects.filter(product=product)
                     reviews = list(reviews_qs.values_list("review_text", flat=True))
-                    extracted_aspects =extract_aspect_sentiment_tasks.delay(reviews) if reviews else []
+                    extracted_aspects =extract_aspect_sentiment(reviews) if reviews else []
                     summary_text = "No reviews available for sentiment analysis." if not reviews else " ".join(extracted_aspects)
 
                     serializer = ProductSerializer(product)
