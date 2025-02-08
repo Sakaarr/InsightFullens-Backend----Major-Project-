@@ -10,10 +10,12 @@ from selenium.webdriver.edge.options import Options
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
 from selenium.webdriver.edge.service import Service as EdgeService
 from .models import Product, ProductReview
+from rest_framework import status, serializers
 from .serializers import ProductSerializer , ProductSearchInputSerializer
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 from transformers import T5ForConditionalGeneration, T5Tokenizer,BartTokenizer, BartForConditionalGeneration
 import torch
+from drf_spectacular.utils import extend_schema, OpenApiExample
 
 
 model_path = "C:/Users/DELL/Desktop/InsightFullens/insightfullens/product/t5base"
@@ -46,12 +48,15 @@ def extract_aspect_sentiment(reviews):
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 max_length=50,  # Increase length to capture details
-                num_beams=5,  # Beam search to improve quality
+                num_beams=5, 
+                do_sample=True,# Beam search to improve quality
                 temperature=0.7,  # Lower temp to keep responses focused
-                top_k=50  # Limit randomness in word choices
+                top_k=50 
+                # Limit randomness in word choices
             )
 
         prediction = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+        prediction = deduplicate_prediction(prediction)
         predictions.append(prediction)
     
     return predictions
@@ -125,10 +130,8 @@ class ProductSearchOrScrapeView(APIView):
 
                     if positive_aspects:
                         summary_parts.append(f"Many users found the {', '.join(positive_aspects)} of the product to be good.")
-
                     if mixed_aspects:
                         summary_parts.append(f"Opinions on the {', '.join(mixed_aspects)} are mixed; some users liked them, while others found them lacking.")
-
                     if negative_aspects:
                         summary_parts.append(f"Users reported issues with the {', '.join(negative_aspects)}.")
 
@@ -136,10 +139,14 @@ class ProductSearchOrScrapeView(APIView):
                     summary_text = " ".join(summary_parts)
                     print(summary_text)
 
-                        
                     for review_text in reviews:
                         ProductReview.objects.create(product=product, review_text=review_text)
-                    return Response({"product_name": product_name, "reviews": reviews,"extracted_aspects": extracted_aspects,"summary_text":summary_text}, status=status.HTTP_200_OK)
+                    return Response({
+                        "product_name": product_name,
+                        "reviews": reviews,
+                        "extracted_aspects": extracted_aspects,
+                        "summary_text": summary_text
+                    }, status=status.HTTP_200_OK)
                 else:
                     return Response({"message": "Failed to scrape product details."}, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
@@ -147,22 +154,134 @@ class ProductSearchOrScrapeView(APIView):
         else:
             try:
                 product = Product.objects.get(name__icontains=user_input)
+                reviews_qs = ProductReview.objects.filter(product=product)
+                reviews = list(reviews_qs.values_list("review_text", flat=True))
+                if reviews:
+                    extracted_aspects = extract_aspect_sentiment(reviews)
+                    aspect_sentiment_count = defaultdict(lambda: {"positive": 0, "negative": 0, "neutral": 0})
+
+                    for aspect_string in extracted_aspects:
+                        parts = aspect_string.split(", ")
+                        for part in parts:
+                            if ":" in part:
+                                aspect, sentiment = part.rsplit(": ", 1)
+                                aspect = aspect.strip().upper()
+                                aspect_sentiment_count[aspect][sentiment.strip()] += 1
+
+                    positive_aspects = [f"**{aspect}**" for aspect, counts in aspect_sentiment_count.items() if counts["positive"] > 0 and counts["negative"] == 0]
+                    negative_aspects = [f"**{aspect}**" for aspect, counts in aspect_sentiment_count.items() if counts["negative"] > 0 and counts["positive"] == 0]
+                    mixed_aspects = [f"**{aspect}**" for aspect, counts in aspect_sentiment_count.items() if counts["positive"] > 0 and counts["negative"] > 0]
+
+                    summary_parts = []
+                    if positive_aspects:
+                        summary_parts.append(f"Many users found the {', '.join(positive_aspects)} of the product to be good.")
+                    if mixed_aspects:
+                        summary_parts.append(f"Opinions on the {', '.join(mixed_aspects)} are mixed; some users liked them, while others found them lacking.")
+                    if negative_aspects:
+                        summary_parts.append(f"Users reported issues with the {', '.join(negative_aspects)}.")
+                    summary_text = " ".join(summary_parts)
+                else:
+                    extracted_aspects = []
+                    summary_text = "No reviews available for sentiment analysis."
+
                 serializer = ProductSerializer(product)
-                return Response(serializer.data, status=status.HTTP_200_OK)
+                response_data = serializer.data
+                response_data.update({
+                    "reviews": reviews,
+                    "extracted_aspects": extracted_aspects,
+                    "summary_text": summary_text,
+                })
+                return Response(response_data, status=status.HTTP_200_OK)
             except Product.DoesNotExist:
                 csv_file_path = os.path.join(os.path.dirname(__file__), "products.csv")
                 results = []
                 try:
                     with open(csv_file_path, mode="r", encoding="utf-8") as file:
                         reader = csv.DictReader(file)
-                        for row in reader:
-                            if user_input.lower() in row["Product Name"].lower():
-                                results.append({"Product Name": row["Product Name"], "Review": row["Product Review"]})
-                    if results:
-                        return Response({"products": results}, status=status.HTTP_200_OK)
-                    else:
-                        return Response({"message": "No matching products found."}, status=status.HTTP_404_NOT_FOUND)
+                        results = [row for row in reader if user_input.lower() in row["Product Name"].lower()]
+                        if results:
+                            return Response({
+                                "products": results,
+                            }, status=status.HTTP_200_OK)
+                        else:
+                            return Response({"message": "No matching products found."}, status=status.HTTP_404_NOT_FOUND)
                 except Exception as e:
                     return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"message": "Input cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({"message": "Input cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+class ReviewInputSerializer(serializers.Serializer):
+    reviews = serializers.ListField(
+        child=serializers.CharField(),
+        help_text="A list of review texts to analyze."
+    )
+
+# Output serializer: Returns a list of predictions.
+class AspectSentimentOutputSerializer(serializers.Serializer):
+    predictions = serializers.ListField(
+        child=serializers.CharField(),
+        help_text="A list of aspect-sentiment predictions corresponding to the input reviews."
+    )
+    
+def deduplicate_prediction(prediction: str) -> str:
+    """
+    Removes duplicate aspect-sentiment pairs from the prediction string.
+    
+    Assumes that pairs are separated by commas. For example:
+        Input: "service: positive, food: negative, service: positive, food: negative"
+        Output: "service: positive, food: negative"
+    """
+    # Split on comma and strip extra whitespace.
+    parts = [part.strip() for part in prediction.split(",") if part.strip()]
+    
+    # Remove duplicates while preserving order.
+    unique_parts = []
+    for part in parts:
+        if part not in unique_parts:
+            unique_parts.append(part)
+    
+    # Join back into a single string.
+    return ", ".join(unique_parts)
+    
+@extend_schema(
+    request=ReviewInputSerializer,
+    responses={200: AspectSentimentOutputSerializer},
+    examples=[
+        OpenApiExample(
+            'Example Request',
+            value={
+                "reviews": [
+                    "The service was great, but the food was cold.",
+                    "I loved the ambiance but the price was too high."
+                ]
+            }
+        ),
+        OpenApiExample(
+            'Example Response',
+            value={
+                "predictions": [
+                    "Extracted aspects and sentiments for review 1",
+                    "Extracted aspects and sentiments for review 2"
+                ]
+            }
+        )
+    ]
+)
+class AspectSentimentAnalysisView(APIView):
+    """
+    POST API endpoint for aspect sentiment analysis.
+    
+    This endpoint accepts a JSON payload with a list of reviews and returns predictions
+    after processing each review using the extract_aspect_sentiment function.
+    """
+    def post(self, request, *args, **kwargs):
+        # Validate the incoming request data.
+        serializer = ReviewInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reviews = serializer.validated_data["reviews"]
+
+        # Get predictions by calling the extraction function.
+        predictions = extract_aspect_sentiment(reviews)
+
+        # Return the predictions in a JSON response.
+        return Response({"predictions": predictions}, status=status.HTTP_200_OK)
