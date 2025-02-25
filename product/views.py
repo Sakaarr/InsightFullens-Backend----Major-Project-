@@ -368,8 +368,229 @@ class ProductSearchOrScrapeView(APIView):
             )
 
         return " ".join(summary_parts) if summary_parts else "No clear sentiment patterns found."
+# import os
+# from .serializers import ProductSerializer, ProductSearchInputSerializer
+# from rest_framework import status, serializers
+# from functools import lru_cache
+# from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+# from typing import List, Dict, Optional, Tuple
+# from collections import defaultdict
+# import asyncio
+# from urllib.parse import urlparse
 
-# [Rest of the code remains the same]
+# from rest_framework.views import APIView
+# from rest_framework.response import Response
+# from rest_framework import status
+# from django.core.cache import cache
+# from transformers import T5ForConditionalGeneration, T5Tokenizer
+# import torch
+# from selenium import webdriver
+# from selenium.webdriver.common.by import By
+# from selenium.webdriver.edge.options import Options
+# from selenium.webdriver.support.ui import WebDriverWait
+# from selenium.webdriver.support import expected_conditions as EC
+# from selenium.common.exceptions import TimeoutException, NoSuchElementException
+# from webdriver_manager.microsoft import EdgeChromiumDriverManager
+# from selenium.webdriver.edge.service import Service as EdgeService
+# from drf_spectacular.utils import extend_schema
+
+# # [Previous OptimizedT5Model and SentimentCache classes remain the same]
+
+# class OptimizedWebScraper:
+#     def __init__(self, max_workers: int = 4):
+#         self.max_workers = max_workers
+#         self.driver_manager = self._initialize_driver_manager()
+#         self.cache = cache
+#         self.cache_timeout = 3600  # 1 hour
+
+#     def _initialize_driver_manager(self):
+#         options = Options()
+#         options.add_argument("--headless")
+#         options.add_argument("--disable-gpu")
+#         options.add_argument("--no-sandbox")
+#         options.add_argument("--disable-dev-shm-usage")
+#         options.add_argument("--disable-blink-features=AutomationControlled")
+#         options.add_argument("--ignore-certificate-errors")
+#         options.add_argument("user-agent=Mozilla/5.0")
+#         return {
+#             'options': options,
+#             'service': EdgeService(EdgeChromiumDriverManager().install())
+#         }
+
+#     def get_cached_product_data(self, url: str) -> Optional[Dict]:
+#         """Get cached product data if available"""
+#         cache_key = f'product_data_{hash(url)}'
+#         return self.cache.get(cache_key)
+
+#     def cache_product_data(self, url: str, data: Dict):
+#         """Cache product data"""
+#         cache_key = f'product_data_{hash(url)}'
+#         self.cache.set(cache_key, data, self.cache_timeout)
+
+#     def scrape_product_reviews(self, url: str) -> Tuple[Optional[str], List[str]]:
+#         """Optimized product review scraping with caching and error handling"""
+#         # Check cache first
+#         cached_data = self.get_cached_product_data(url)
+#         if cached_data:
+#             return cached_data['product_name'], cached_data['reviews']
+
+#         driver = None
+#         try:
+#             driver = webdriver.Edge(
+#                 service=self.driver_manager['service'],
+#                 options=self.driver_manager['options']
+#             )
+            
+#             # Set page load timeout
+#             driver.set_page_load_timeout(20)
+#             driver.get(url)
+            
+#             wait = WebDriverWait(driver, 10)
+            
+#             # Efficient element location with explicit waits
+#             product_name = wait.until(
+#                 EC.presence_of_element_located((By.ID, "productTitle"))
+#             ).text.strip()
+            
+#             # Scroll to load more reviews if available
+#             self._scroll_for_reviews(driver)
+            
+#             # Efficient review collection
+#             review_elements = wait.until(
+#                 EC.presence_of_all_elements_located(
+#                     (By.CSS_SELECTOR, 'div[data-hook="review-collapsed"]')
+#                 )
+#             )
+            
+#             reviews = []
+#             # Process reviews in parallel
+#             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+#                 review_futures = [
+#                     executor.submit(lambda e: e.text.strip(), element)
+#                     for element in review_elements
+#                 ]
+#                 reviews = [
+#                     future.result() for future in review_futures
+#                     if future.result()
+#                 ]
+
+#             # Cache the results
+#             product_data = {
+#                 'product_name': product_name,
+#                 'reviews': reviews
+#             }
+#             self.cache_product_data(url, product_data)
+            
+#             return product_name, reviews
+
+#         except TimeoutException:
+#             return None, ["Timeout while loading product page"]
+#         except NoSuchElementException:
+#             return None, ["Required elements not found on page"]
+#         except Exception as e:
+#             return None, [f"Error scraping reviews: {str(e)}"]
+#         finally:
+#             if driver:
+#                 driver.quit()
+
+#     def _scroll_for_reviews(self, driver, max_scrolls: int = 5):
+#         """Efficiently scroll to load more reviews"""
+#         for _ in range(max_scrolls):
+#             try:
+#                 driver.execute_script(
+#                     "window.scrollTo(0, document.body.scrollHeight);"
+#                 )
+#                 asyncio.sleep(1)  # Non-blocking sleep
+#             except Exception:
+#                 break
+
+# class OptimizedProductAnalyzer:
+#     def __init__(self):
+#         self.model = OptimizedT5Model(MODEL_PATH)
+#         self.cache = SentimentCache()
+#         self.scraper = OptimizedWebScraper()
+#         self.process_pool = ProcessPoolExecutor(max_workers=MAX_WORKERS)
+
+#     async def analyze_url(self, url: str) -> Dict:
+#         """Analyze product from URL with optimized scraping and processing"""
+#         # Validate URL
+#         try:
+#             parsed_url = urlparse(url)
+#             if not all([parsed_url.scheme, parsed_url.netloc]):
+#                 raise ValueError("Invalid URL format")
+#         except Exception:
+#             raise ValueError("Invalid URL provided")
+
+#         # Scrape product data
+#         product_name, reviews = self.scraper.scrape_product_reviews(url)
+#         if not product_name:
+#             raise ValueError("Failed to scrape product data")
+
+#         # Process reviews in optimal batches
+#         extracted_aspects = []
+#         for i in range(0, len(reviews), BATCH_SIZE):
+#             batch = reviews[i:i + BATCH_SIZE]
+#             batch_results = self.model.process_batch(batch)
+#             extracted_aspects.extend(batch_results)
+
+#         # Generate summary
+#         summary = self._generate_summary(extracted_aspects)
+
+#         return {
+#             "product_name": product_name,
+#             "reviews": reviews,
+#             "extracted_aspects": extracted_aspects,
+#             "summary": summary
+#         }
+
+#     def _generate_summary(self, extracted_aspects: List[str]) -> str:
+#         """[Previous summary generation code remains the same]"""
+#         pass
+
+# class OptimizedProductSearchView(APIView):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.analyzer = OptimizedProductAnalyzer()
+
+#     async def post(self, request):
+#         try:
+#             query = request.data.get("input", "").strip()
+#             if not query:
+#                 return Response(
+#                     {"error": "Input is required"},
+#                     status=status.HTTP_400_BAD_REQUEST
+#                 )
+
+#             # Handle URL input
+#             if query.startswith(("http://", "https://")):
+#                 result = await self.analyzer.analyze_url(query)
+#                 return Response(result, status=status.HTTP_200_OK)
+
+#             # Handle search query [Previous search logic remains the same]
+#             products = (
+#                 Product.objects.filter(name__icontains=query)
+#                 .prefetch_related('productreview_set')
+#             )
+
+#             if not products.exists():
+#                 return Response(
+#                     {"message": "No matching products found."},
+#                     status=status.HTTP_404_NOT_FOUND
+#                 )
+
+#             # [Rest of the search logic remains the same]
+
+#         except ValueError as e:
+#             return Response(
+#                 {"error": str(e)},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+#         except Exception as e:
+#             return Response(
+#                 {"error": f"Operation failed: {str(e)}"},
+#                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
+#             )
+# # [Rest of the code remains the same]
 class ReviewInputSerializer(serializers.Serializer):
     reviews = serializers.ListField(
         child=serializers.CharField(),
