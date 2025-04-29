@@ -4,7 +4,10 @@ from rest_framework import status
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from drf_spectacular.utils import extend_schema, OpenApiExample
-from .serializers import UserSerializer
+from .serializers import UserSerializer, UserProfileSerializer
+from .models import Profile
+from rest_framework import generics, permissions
+from rest_framework.permissions import IsAuthenticated
 
 @extend_schema(
     request=UserSerializer,
@@ -76,3 +79,9 @@ class LoginView(APIView):
                 'access': str(refresh.access_token),
             }, status=status.HTTP_200_OK)
         return Response({'error': 'Invalid Credentials'}, status=status.HTTP_400_BAD_REQUEST)
+class UserProfileView(generics.RetrieveUpdateAPIView):
+    serializer_class = UserProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user.profile
